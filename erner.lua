@@ -8,112 +8,80 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local player = Players.LocalPlayer
-local character = player.Character or player.CharacterAdded:Wait()
-local rootPart = character:WaitForChild("HumanoidRootPart")
-
--- Define positions for back-and-forth movement
-local pointA = Vector3.new(45, 8, 91)
-local pointB = Vector3.new(45, 8, 154)
-local moveSpeed = 21 -- Normal walking speed
-
--- Function to disable collisions (noclip effect)
-local function enableNoClip()
-    for _, part in pairs(character:GetDescendants()) do
-        if part:IsA("BasePart") and part.CanCollide then
-            part.CanCollide = false
-        end
-    end
-end
-
--- Function to move smoothly between points using TweenService
-local function tweenToPosition(targetPosition)
-    local distance = (rootPart.Position - targetPosition).Magnitude
-    local timeToMove = distance / moveSpeed -- Time based on speed
-
-    local tweenInfo = TweenInfo.new(timeToMove, Enum.EasingStyle.Linear, Enum.EasingDirection.Out)
-    local tween = TweenService:Create(rootPart, tweenInfo, {CFrame = CFrame.new(targetPosition)})
-    
-    tween:Play()
-    return tween
-end
-
--- Function to fire the create party remote endlessly (Updated path & args, now with isPrivate=true)
-local function fireCreatePartyRemote()
-    while true do
-        local args = {
-            {
-                isPrivate = true,      -- Now required for private/solo parties
-                maxMembers = 1,        -- Ensures solo party creation
-                trainId = "default",   -- Required by the new game system
-                gameMode = "Normal"    -- Keeps the correct mode
-            }
-        }
-        print("Firing CreateParty remote with args:", args) -- Debugging statement
-        ReplicatedStorage:WaitForChild("Shared")
-            :WaitForChild("Network")
-            :WaitForChild("RemoteEvent")
-            :WaitForChild("CreateParty")
-            :FireServer(unpack(args))
-        wait(0.1) -- Small delay to prevent crashes
-    end
-end
-
--- Function to check if the player has been teleported
-local function hasBeenTeleported()
-    return game.PlaceId ~= lobbyPlaceId -- Only consider teleported if we've left the lobby
-end
-
--- Function to get a low-player server
-local function getLowPlayerServer(cursor)
-    local apiUrl = "https://games.roblox.com/v1/games/" .. lobbyPlaceId .. "/servers/Public?sortOrder=Asc&limit=100"
-    local url = apiUrl .. ((cursor and "&cursor=" .. cursor) or "")
-    local success, response = pcall(function()
-        return game:HttpGet(url)
-    end)
-
-    if success then
-        local data = HttpService:JSONDecode(response)
-        for _, server in pairs(data.data) do
-            if server.playing < 3 and server.id ~= game.JobId then -- Adjust maxPlayersAllowed if needed
-                return server.id
-            end
-        end
-        return data.nextPageCursor
-    end
-
-    warn("Failed to fetch server list.")
-    return nil
-end
-
--- Main teleportation loop
-local function startTeleportationLoop()
-    enableNoClip() -- Enable noclip to prevent movement issues
-
-    while not hasBeenTeleported() do
-        local tweenA = tweenToPosition(pointA)
-        tweenA.Completed:Wait() -- Wait for movement to finish
-        if hasBeenTeleported() then break end
-
-        local tweenB = tweenToPosition(pointB)
-        tweenB.Completed:Wait() -- Wait for movement to finish
-        if hasBeenTeleported() then break end
-    end
-
-    print("Successfully Teleported. Stopping teleportation & remote firing.")
-end
 
 -- Only execute if the current PlaceId matches the lobbyPlaceId
 if game.PlaceId == lobbyPlaceId then
-    -- Start the remote firing loop
-    task.spawn(fireCreatePartyRemote)
+    local CreateParty = ReplicatedStorage.Shared.Network.RemoteEvent.CreateParty
 
-    -- Start the teleportation loop
-    task.spawn(startTeleportationLoop)
+    -- Repeatedly find a "Waiting for players..." PartyZone, teleport to it, and create a party
+    local function findAndCreatePartyLoop()
+        while true do
+            local HRP = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+            if not HRP then
+                player.CharacterAdded:Wait()
+                HRP = player.Character:WaitForChild("HumanoidRootPart")
+            end
 
-    -- Start the delayed teleportation check in parallel
+            local FoundLobby = false
+
+            for _, v in pairs(workspace.PartyZones:GetChildren()) do
+                if v.Name:match("PartyZone") and v:FindFirstChild("BillboardGui")
+                    and v.BillboardGui:FindFirstChild("StatusLabel")
+                    and v.BillboardGui.StatusLabel.Text == "Waiting for players..." then
+
+                    print("Lobby Found!")
+                    HRP.CFrame = v:FindFirstChild("Hitbox").CFrame
+                    FoundLobby = true
+                    task.wait(0.1)
+
+                    local args = {
+                        {
+                            isPrivate = true,
+                            maxMembers = 1,
+                            trainId = "default",
+                            gameMode = "Normal"
+                        }
+                    }
+                    CreateParty:FireServer(unpack(args))
+                    break
+                end
+            end
+
+            -- Wait ~7 seconds before trying again
+            task.wait(7)
+        end
+    end
+
+    -- Function to check if the player has been teleported
+    local function hasBeenTeleported()
+        return game.PlaceId ~= lobbyPlaceId
+    end
+
+    -- Function to get a low-player server
+    local function getLowPlayerServer(cursor)
+        local apiUrl = "https://games.roblox.com/v1/games/" .. lobbyPlaceId .. "/servers/Public?sortOrder=Asc&limit=100"
+        local url = apiUrl .. ((cursor and "&cursor=" .. cursor) or "")
+        local success, response = pcall(function()
+            return game:HttpGet(url)
+        end)
+
+        if success then
+            local data = HttpService:JSONDecode(response)
+            for _, server in pairs(data.data) do
+                if server.playing < 3 and server.id ~= game.JobId then
+                    return server.id
+                end
+            end
+            return data.nextPageCursor
+        end
+
+        warn("Failed to fetch server list.")
+        return nil
+    end
+
+    -- Delayed teleportation check for server hopping
     task.spawn(function()
-        wait(35) -- Wait for 35 seconds
-
+        wait(25)
         if game.PlaceId == lobbyPlaceId then
             local serverId, cursor = nil, nil
             repeat
@@ -133,6 +101,9 @@ if game.PlaceId == lobbyPlaceId then
             print("Not in the lobby, skipping server hop.")
         end
     end)
+
+    -- Start the party-finding/creation loop in parallel
+    task.spawn(findAndCreatePartyLoop)
 else
     print("Not in the local lobby. Script will not run.")
 end
