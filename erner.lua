@@ -48,7 +48,7 @@ if game.PlaceId == lobbyPlaceId then
             end
 
             -- Wait ~7 seconds before trying again
-            task.wait(7)
+            task.wait(3)
         end
     end
 
